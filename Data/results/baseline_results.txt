@@ -1,0 +1,18 @@
+Accuracy: 0.9219
+Weighted F1: 0.9215
+
+                     precision    recall  f1-score   support
+
+        environment       0.87      0.75      0.80        79
+              noise       0.96      0.96      0.96        51
+              other       0.93      0.95      0.94       727
+      public_safety       0.71      0.71      0.71        52
+road_infrastructure       1.00      0.86      0.93       358
+    street_lighting       0.91      0.98      0.94        43
+ traffic_management       0.86      0.96      0.91       141
+   waste_management       0.93      0.96      0.95       162
+    water_utilities       0.88      0.96      0.92       230
+
+           accuracy                           0.92      1843
+          macro avg       0.90      0.90      0.90      1843
+       weighted avg       0.92      0.92      0.92      1843

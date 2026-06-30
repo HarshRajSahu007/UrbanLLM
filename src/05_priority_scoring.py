@@ -1,36 +1,50 @@
+import os
+from pathlib import Path
 import pandas as pd
 
-IN_FILE="data/results/glm52_predictions.csv"
-OUT_FILE="data/results/priority_scored.csv"
+_SRC     = Path(__file__).parent
+_DATA    = _SRC.parent / "Data"
 
-priority_rules= {
-"public_safety":90,
-"traffic_management":80,
-"water_utilities":75,
-"road_infrastructure":65,
-"street_lighting":55,
-"waste_management":50,
-"environment":45,
-"noise":30,
-"other":20
+IN_FILE  = _DATA / "results" / "glm52_predictions.csv"
+OUT_FILE = _DATA / "results" / "priority_scored.csv"
+
+os.makedirs(str(OUT_FILE.parent), exist_ok=True)
+
+# ── Priority base scores by category ──────────────────────────────────────
+priority_rules = {
+    "public_safety":      90,
+    "traffic_management": 80,
+    "water_utilities":    75,
+    "road_infrastructure":65,
+    "street_lighting":    55,
+    "waste_management":   50,
+    "environment":        45,
+    "noise":              30,
+    "other":              20,
 }
 
-critical_keywords= [
-"danger","injury","accident","fire","collapse","flood",
-"blocked road","traffic signal out","water main break",
-"emergency","hazard"
+# ── Keywords that escalate priority ───────────────────────────────────────
+critical_keywords = [
+    "danger", "injury", "accident", "fire", "collapse", "flood",
+    "blocked road", "traffic signal out", "water main break",
+    "emergency", "hazard", "unsafe", "explosion", "gas leak",
 ]
 
-def compute_priority(row):
-    category = row["glm52_pred"]
-    text = str(row["text"]).lower()
+sensitive_locations = ["school", "hospital", "playground", "daycare", "clinic"]
+
+
+def compute_priority(row) -> tuple:
+    category = row.get("glm52_pred", "other")
+    text = str(row.get("text", "")).lower()
 
     score = priority_rules.get(category, 20)
 
+    # Escalate for critical keywords
     if any(k in text for k in critical_keywords):
         score += 15
 
-    if "school" in text or "hospital" in text:
+    # Escalate near sensitive locations
+    if any(loc in text for loc in sensitive_locations):
         score += 10
 
     score = min(score, 100)
@@ -46,14 +60,17 @@ def compute_priority(row):
 
     return score, level
 
-df=pd.read_csv(IN_FILE)
 
-df[["priority_score","priority_level"]]=df.apply(
-lambda row: pd.Series(compute_priority(row)),
-axis=1
+# ── Load and score ─────────────────────────────────────────────────────────
+df = pd.read_csv(IN_FILE)
+
+df[["priority_score", "priority_level"]] = df.apply(
+    lambda row: pd.Series(compute_priority(row)),
+    axis=1,
 )
 
-df.to_csv(OUT_FILE,index=False)
+df.to_csv(str(OUT_FILE), index=False)
 
-print(df[["glm52_pred","priority_score","priority_level"]].head())
-print(f"Saved priority results: {OUT_FILE}")
+print(df[["glm52_pred", "priority_score", "priority_level"]].head(10).to_string())
+print(f"\nPriority level distribution:\n{df['priority_level'].value_counts().to_string()}")
+print(f"\nSaved priority results: {OUT_FILE}")
