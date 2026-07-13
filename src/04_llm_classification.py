@@ -15,6 +15,7 @@ load_dotenv(dotenv_path=str(_WORKSPACE / ".env"))
 _DATA     = _SRC.parent / "Data"
 DATA_FILE = _DATA / "processed" / "complaints_clean.csv"
 OUT_FILE  = _DATA / "results" / "glm52_predictions.csv"
+RAW_OUT_FILE = _DATA / "results" / "glm52_raw_responses.jsonl"
 
 os.makedirs(str(OUT_FILE.parent), exist_ok=True)
 
@@ -61,31 +62,50 @@ Citizen complaint:
 
 Classify the complaint into one allowed category.
 """
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user",   "content": user_prompt},
-        ],
-        temperature=0,
-        response_format={"type": "json_object"},
-    )
-
-    content = response.choices[0].message.content
-
-    try:
-        parsed = json.loads(content)
-    except Exception:
-        parsed = {
-            "category":   "other",
-            "confidence": 0.0,
-            "reason":     "JSON parsing failed",
-        }
-
-    if parsed.get("category") not in LABELS:
-        parsed["category"] = "other"
-
-    return parsed
+    max_retries = 5
+    backoff = 2.0
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user",   "content": user_prompt},
+                ],
+                temperature=0,
+                response_format={"type": "json_object"},
+            )
+            content = response.choices[0].message.content
+            parsed = json.loads(content)
+            
+            # Ensure parsed output is a dict and has all required fields
+            if not isinstance(parsed, dict):
+                parsed = {
+                    "category":   "other",
+                    "confidence": 0.0,
+                    "reason":     "Response was not a JSON object",
+                }
+            
+            if "category" not in parsed:
+                parsed["category"] = "other"
+            if "confidence" not in parsed:
+                parsed["confidence"] = 0.0
+            if "reason" not in parsed:
+                parsed["reason"] = "No reason provided by LLM"
+                
+            if parsed.get("category") not in LABELS:
+                parsed["category"] = "other"
+                
+            parsed["raw_output"] = content
+            return parsed
+            
+        except Exception as e:
+            if attempt == max_retries - 1:
+                print(f"API call failed after {max_retries} attempts: {e}")
+                raise e
+            print(f"Attempt {attempt + 1} failed: {e}. Retrying in {backoff:.1f} seconds...")
+            time.sleep(backoff)
+            backoff *= 2.0
 
 
 # ── Load data ──────────────────────────────────────────────────────────────
@@ -104,15 +124,52 @@ for _, row in tqdm(df_sample.iterrows(), total=len(df_sample)):
             "category":   "other",
             "confidence": 0.0,
             "reason":     str(e),
+            "raw_output": "",
         }
     predictions.append(result)
-    time.sleep(0.2)  # Rate limit buffer
+    time.sleep(4.2)  # Rate limit buffer to stay under 15 RPM for Free Tier API keys
 
 df_sample["glm52_pred"]       = [p["category"]   for p in predictions]
 df_sample["glm52_confidence"] = [p["confidence"] for p in predictions]
 df_sample["glm52_reason"]     = [p["reason"]     for p in predictions]
+df_sample["glm52_raw_output"] = [p.get("raw_output", "") for p in predictions]
 
 df_sample.to_csv(str(OUT_FILE), index=False)
 
+# ── Save raw responses to a JSONL file ────────────────────────────────────
+with open(str(RAW_OUT_FILE), "w", encoding="utf-8") as f:
+    for row_idx, p in enumerate(predictions):
+        f.write(json.dumps({
+            "index": row_idx,
+            "text": df_sample.iloc[row_idx]["text"],
+            "category": p.get("category", "other"),
+            "confidence": p.get("confidence", 0.0),
+            "reason": p.get("reason", ""),
+            "raw_output": p.get("raw_output", "")
+        }) + "\n")
+
 print(f"Saved GLM-5.2 predictions ({len(df_sample)} rows) to {OUT_FILE}")
+print(f"Saved raw LLM outputs to {RAW_OUT_FILE}")
 print(df_sample["glm52_pred"].value_counts().to_string())
+
+# ── Run downstream pipeline scripts automatically ──────────────────────────
+print("\nRunning downstream pipeline scripts...")
+import subprocess
+import sys
+
+scripts = [
+    _SRC / "05_priority_scoring.py",
+    _SRC / "06_department_routing.py",
+    _SRC / "07_evaluate.py",
+    _SRC / "08_generate_tables.py",
+]
+
+for script in scripts:
+    print(f"\nExecuting {script.name}...")
+    res = subprocess.run([sys.executable, str(script)], capture_output=True, text=True)
+    if res.returncode != 0:
+        print(f"Error running {script.name}:")
+        print(res.stderr)
+    else:
+        print(res.stdout)
+print("\nPipeline execution complete!")
