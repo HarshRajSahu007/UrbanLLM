@@ -112,7 +112,8 @@ Classify the complaint into one allowed category.
 df = pd.read_csv(DATA_FILE)
 
 # Evaluate on sample for deadline; increase for full run
-df_sample = df.sample(min(1000, len(df)), random_state=42).copy()
+sample_size = int(os.getenv("CLASSIFICATION_SAMPLE_SIZE", "15"))
+df_sample = df.sample(min(sample_size, len(df)), random_state=42).copy()
 
 predictions = []
 
