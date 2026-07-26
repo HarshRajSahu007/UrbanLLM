@@ -1,2 +1,5 @@
 Priority Level,Number of Complaints
-low,1000
+low,895
+high,51
+critical,36
+medium,18
