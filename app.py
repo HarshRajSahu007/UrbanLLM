@@ -406,7 +406,11 @@ with tab1:
         
         analyze_btn = st.button("🚀 Analyze & Dispatch", type="primary", use_container_width=True)
 
-    if analyze_btn and user_input and user_input != "Write your complaint here...":
+    if analyze_btn:
+        if not user_input.strip() or user_input == "Write your complaint here...":
+            st.warning("⚠️ Please enter a complaint before analysis.")
+            st.stop()
+            
         with st.spinner("Processing complaint..."):
             cleaned = clean_text(user_input)
             
@@ -415,8 +419,16 @@ with tab1:
             llm_result = predict_llm(cleaned)
             
             # Use LLM prediction if confidence is high, else fallback or use LLM directly
-            final_category = llm_result["category"]
             confidence = llm_result["confidence"]
+            
+            if confidence >= confidence_threshold:
+                final_category = llm_result["category"]
+                decision_model = "Generative LLM"
+                reason = llm_result["reason"]
+            else:
+                final_category = ml_pred
+                decision_model = "Baseline ML (Fallback)"
+                reason = f"LLM confidence ({confidence:.2f}) below threshold ({confidence_threshold:.2f}). Used Baseline ML prediction."
             
             # Compute Priority and Routing
             priority = compute_priority(final_category, user_input)
@@ -446,7 +458,7 @@ with tab1:
                     </div>
                     <div class="kv-row">
                         <span class="kv-key">Decision Model:</span>
-                        <span class="kv-val">Generative LLM</span>
+                        <span class="kv-val">{decision_model}</span>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -500,7 +512,7 @@ with tab1:
             st.markdown(f"""
             <div class="glass-card" style="margin-top: 10px;">
                 <div class="glass-card-header">💡 LLM Decision Rationale</div>
-                <p style="color: #E5E7EB; line-height: 1.5; margin: 0;">{llm_result['reason']}</p>
+                <p style="color: #E5E7EB; line-height: 1.5; margin: 0;">{reason}</p>
             </div>
             """, unsafe_allow_html=True)
 
@@ -706,6 +718,14 @@ with tab3:
                 # Set classification sample size to 15 in environment to keep it short
                 env = os.environ.copy()
                 env["CLASSIFICATION_SAMPLE_SIZE"] = "15"
+                
+                # FIX: Inject sidebar UI configurations into the background process
+                if api_key:
+                    env["LLM_API_KEY"] = api_key
+                if base_url:
+                    env["LLM_BASE_URL"] = base_url
+                if model_name:
+                    env["GLM_MODEL"] = model_name
                 
                 proc = subprocess.Popen(
                     [venv_python, str(script_path)],

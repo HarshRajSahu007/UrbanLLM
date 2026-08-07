@@ -1,56 +1,42 @@
 import os
+import glob
 from pathlib import Path
 import pandas as pd
 
-# ── Resolve paths relative to this file (works from any CWD) ──────────────
-_ROOT        = Path(__file__).parent          # .../UrbanLLM/src/
-_WORKSPACE   = _ROOT.parent.parent            # .../UrbanLLM/  (datasets live here)
+# ── Set up dynamic paths ──────────────
+_ROOT = Path(__file__).parent          
+RAW_DIR = _ROOT.parent / "Data" / "raw" 
+OUT_FILE = _ROOT.parent / "Data" / "processed" / "complaints_raw.csv"
 
-NYC311_CLEAN = _WORKSPACE / "NYC311_cleaned_final.csv"
-INDIA_FILE   = _WORKSPACE / "indian civic complaints research 8k+.csv"
-OUT_FILE     = _ROOT.parent / "Data" / "processed" / "complaints_raw.csv"
+os.makedirs(OUT_FILE.parent, exist_ok=True)
 
-os.makedirs(os.path.dirname(OUT_FILE), exist_ok=True)
+# ── Find all CSVs in the raw folder ──────────────
+csv_files = glob.glob(str(RAW_DIR / "*.csv"))
+df_list = []
 
-# ── Load NYC311 cleaned dataset ────────────────────────────────────────────
-# Columns present: unique_key, complaint_type, descriptor, descriptor_2,
-#   agency, agency_name, borough, city, status, resolution_description, ...
-nyc = pd.read_csv(NYC311_CLEAN, low_memory=False)
+print(f"Scanning directory: {RAW_DIR}")
 
-nyc_out = pd.DataFrame({
-    "complaint_type":  nyc["complaint_type"].fillna("Unknown"),
-    "description":     nyc["descriptor"].fillna("Unknown"),
-    "agency":          nyc["agency_name"].fillna("Unknown"),
-    "location":        nyc["borough"].fillna("Unknown"),
-    "status":          nyc.get("status", pd.Series(["Unknown"] * len(nyc))).fillna("Unknown"),
-    "source_dataset":  "NYC311",
-})
+# ── Loop, load, and merge ──────────────
+for file in csv_files:
+    try:
+        df = pd.read_csv(file, low_memory=False)
+        # Ensure it has a source dataset column based on the file name
+        if "source_dataset" not in df.columns:
+            df["source_dataset"] = Path(file).stem
+        
+        df_list.append(df)
+        print(f"SUCCESS: Loaded {Path(file).name} - {len(df)} rows")
+    except Exception as e:
+        print(f"ERROR loading {file}: {e}")
 
-print(f"NYC311 loaded: {len(nyc_out)} rows")
-
-# ── Load Indian civic complaints dataset ───────────────────────────────────
-# Columns present: complaint_id, clean_title, description, city, state,
-#   search_keyword, source, published_date, ...
-india = pd.read_csv(INDIA_FILE, low_memory=False)
-
-india_out = pd.DataFrame({
-    "complaint_type":  india["search_keyword"].fillna("Unknown"),
-    "description":     (
-        india["clean_title"].fillna("") + ". " + india["description"].fillna("")
-    ).str.strip(". "),
-    "agency":          "Unknown",
-    "location":        india["city"].fillna("Unknown") + ", " + india["state"].fillna("Unknown"),
-    "status":          "Unknown",
-    "source_dataset":  "India",
-})
-
-print(f"India dataset loaded: {len(india_out)} rows")
-
-# ── Merge and save ─────────────────────────────────────────────────────────
-df = pd.concat([nyc_out, india_out], ignore_index=True)
-df.to_csv(OUT_FILE, index=False)
-
-print(f"\nCombined dataset: {len(df)} rows")
-print(f"Source breakdown:\n{df['source_dataset'].value_counts().to_string()}")
-print(f"\nSaved {len(df)} rows to {OUT_FILE}")
-print(f"Columns: {list(df.columns)}")
+# ── Save merged output ──────────────
+if df_list:
+    merged_df = pd.concat(df_list, ignore_index=True)
+    merged_df.to_csv(OUT_FILE, index=False)
+    print(f"\nSuccessfully merged {len(csv_files)} files.")
+    print(f"Total Combined dataset: {len(merged_df)} rows")
+    print(f"Saved merged data to {OUT_FILE}")
+else:
+    print(f"WARNING: No CSV files found in {RAW_DIR}.")
+    # Create empty dummy file so pipeline doesn't crash
+    pd.DataFrame().to_csv(OUT_FILE, index=False)
