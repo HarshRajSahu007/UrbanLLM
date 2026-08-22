@@ -261,12 +261,14 @@ Allowed categories:
 road_infrastructure, waste_management, water_utilities, traffic_management,
 street_lighting, noise, public_safety, environment, other.
 
-Return only valid JSON:
+Return only valid JSON matching this exact schema:
 {
-  "category": "...",
-  "confidence": 0.0,
-  "reason": "short reason"
+  "category": "road_infrastructure",
+  "confidence": 0.95,
+  "reason": "short explanation"
 }
+
+Note: "confidence" MUST be a float number between 0.0 and 1.0 representing your classification certainty (e.g. 0.95).
 """
 
 # ── Logic Functions ──────────────────────────────────────────────────────────
@@ -276,58 +278,96 @@ def clean_text(text: str) -> str:
     text = re.sub(r"[^a-zA-Z0-9\s.,!?-]", "", text)
     return text.strip()
 
-def predict_baseline(text: str) -> str:
+def predict_baseline_full(text: str) -> tuple[str, float]:
     if baseline_model is None:
-        return "Model not loaded"
+        return "Model not loaded", 0.0
     cleaned = clean_text(text)
     try:
         pred = baseline_model.predict([cleaned])[0]
-        return pred
+        if hasattr(baseline_model, "predict_proba"):
+            probs = baseline_model.predict_proba([cleaned])[0]
+            conf = float(np.max(probs))
+        else:
+            conf = 0.85
+        return pred, conf
     except Exception as e:
-        return f"Error: {e}"
+        return f"Error: {e}", 0.0
+
+def predict_baseline(text: str) -> str:
+    pred, _ = predict_baseline_full(text)
+    return pred
 
 def predict_llm(text: str) -> dict:
     if not client:
         return {
             "category": "other",
             "confidence": 0.0,
-            "reason": "API Key is not configured in settings."
+            "reason": "API Key is not configured in settings.",
+            "is_error": True
         }
     
     user_prompt = f"Citizen complaint:\n{text}\n\nClassify the complaint into one allowed category."
-    try:
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": user_prompt},
-            ],
-            temperature=0,
-            response_format={"type": "json_object"},
-        )
-        content = response.choices[0].message.content
-        parsed = json.loads(content)
-        
-        # Validation
-        if not isinstance(parsed, dict):
-            parsed = {}
-        if "category" not in parsed:
-            parsed["category"] = "other"
-        if "confidence" not in parsed:
-            parsed["confidence"] = 0.0
-        if "reason" not in parsed:
-            parsed["reason"] = "No reason provided by LLM."
+    
+    max_retries = 3
+    backoff = 1.0
+    
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user",   "content": user_prompt},
+                ],
+                temperature=0,
+            )
+            content = response.choices[0].message.content.strip()
             
-        if parsed.get("category") not in LABELS:
-            parsed["category"] = "other"
+            # Clean markdown codeblocks if present
+            if content.startswith("```json"):
+                content = content[7:]
+            if content.startswith("```"):
+                content = content[3:]
+            if content.endswith("```"):
+                content = content[:-3]
+            content = content.strip()
             
-        return parsed
-    except Exception as e:
-        return {
-            "category": "other",
-            "confidence": 0.0,
-            "reason": f"API Error: {str(e)}"
-        }
+            parsed = json.loads(content)
+            
+            # Validation
+            if not isinstance(parsed, dict):
+                parsed = {}
+            if "category" not in parsed or parsed["category"] not in LABELS:
+                parsed["category"] = "other"
+            
+            # Extract and parse confidence
+            raw_conf = parsed.get("confidence", 0.0)
+            try:
+                conf = float(raw_conf)
+                if conf <= 0.0 and parsed["category"] != "other":
+                    conf = 0.90  # Default high confidence if valid category predicted
+                conf = min(max(conf, 0.0), 1.0)
+            except Exception:
+                conf = 0.90 if parsed["category"] != "other" else 0.0
+            
+            parsed["confidence"] = conf
+            if "reason" not in parsed:
+                parsed["reason"] = "No reason provided by LLM."
+            parsed["is_error"] = False
+                
+            return parsed
+        except Exception as e:
+            if "429" in str(e) or "Rate limit" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                if attempt < max_retries - 1:
+                    time.sleep(backoff)
+                    backoff *= 2.0
+                    continue
+            return {
+                "category": "other",
+                "confidence": 0.0,
+                "reason": f"API Error: {str(e)}",
+                "is_error": True
+            }
 
 def compute_priority(category: str, text: str) -> dict:
     text_lower = text.lower()
@@ -411,16 +451,43 @@ with tab1:
             cleaned = clean_text(user_input)
             
             # Predict
-            ml_pred = predict_baseline(cleaned)
+            ml_pred, ml_conf = predict_baseline_full(cleaned)
             llm_result = predict_llm(cleaned)
             
-            # Use LLM prediction if confidence is high, else fallback or use LLM directly
-            final_category = llm_result["category"]
-            confidence = llm_result["confidence"]
+            llm_cat = llm_result["category"]
+            llm_conf = float(llm_result.get("confidence", 0.0))
+            is_error = llm_result.get("is_error", False)
             
-            # Compute Priority and Routing
+            # Hybrid Decision & Fallback System
+            # If LLM returned valid high-confidence category (>= threshold) and no error: use LLM
+            if not is_error and llm_conf >= confidence_threshold and llm_cat != "other":
+                final_category = llm_cat
+                final_confidence = llm_conf
+                decision_model = "Generative LLM"
+                fallback_reason = None
+            elif ml_pred not in ["Model not loaded", "other", "Error"]:
+                final_category = ml_pred
+                final_confidence = ml_conf
+                decision_model = "Baseline ML (Fallback)"
+                if is_error:
+                    fallback_reason = f"LLM API Error ({llm_result['reason']}). Automatically using Baseline ML model."
+                elif llm_conf < confidence_threshold:
+                    fallback_reason = f"LLM Confidence ({llm_conf:.2f}) is below minimum threshold ({confidence_threshold:.2f}). System fell back to Baseline ML model."
+                else:
+                    fallback_reason = "LLM categorized complaint as 'other'. System fell back to Baseline ML model."
+            else:
+                final_category = llm_cat if llm_cat != "other" else (ml_pred if ml_pred != "Model not loaded" else "other")
+                final_confidence = llm_conf if llm_conf > 0 else ml_conf
+                decision_model = "Generative LLM" if not is_error else "Fallback ML"
+                fallback_reason = None
+            
+            # Compute Priority and Routing based on final_category
             priority = compute_priority(final_category, user_input)
             department = route_department(final_category)
+            
+            # Display Fallback Alert if active
+            if fallback_reason:
+                st.info(f"💡 **Smart Dispatch Fallback Activated:** {fallback_reason}")
             
             # Outputs Layout
             st.markdown("### 📊 Classification & Dispatch Results")
@@ -434,19 +501,19 @@ with tab1:
                     <div class="glass-card-header">🤖 Classification Models</div>
                     <div class="kv-row">
                         <span class="kv-key">Baseline ML Model:</span>
-                        <span class="kv-val">{ml_pred.replace('_', ' ').title()}</span>
+                        <span class="kv-val">{ml_pred.replace('_', ' ').title()} ({ml_conf*100:.0f}%)</span>
                     </div>
                     <div class="kv-row">
                         <span class="kv-key">LLM Classifier:</span>
-                        <span class="kv-val">{llm_result['category'].replace('_', ' ').title()}</span>
+                        <span class="kv-val">{llm_cat.replace('_', ' ').title()}</span>
                     </div>
                     <div class="kv-row">
-                        <span class="kv-key">Confidence:</span>
-                        <span class="kv-val">{confidence:.2f}</span>
+                        <span class="kv-key">LLM Confidence:</span>
+                        <span class="kv-val">{llm_conf:.2f}</span>
                     </div>
                     <div class="kv-row">
                         <span class="kv-key">Decision Model:</span>
-                        <span class="kv-val">Generative LLM</span>
+                        <span class="kv-val" style="color: #60A5FA;">{decision_model}</span>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -635,7 +702,7 @@ with tab3:
                 colors = {"low": "#4ADE80", "medium": "#FACC15", "high": "#FB923C", "critical": "#F87171"}
                 counts = df_analysis["priority_level"].value_counts().reindex(["low", "medium", "high", "critical"], fill_value=0)
                 
-                sns.barplot(x=counts.index, y=counts.values, palette=[colors[k] for k in counts.index], ax=ax)
+                sns.barplot(x=counts.index, y=counts.values, hue=counts.index, palette=[colors[k] for k in counts.index], legend=False, ax=ax)
                 ax.set_title("Complaints by Priority Level")
                 ax.set_ylabel("Count")
                 ax.set_xlabel("Priority Level")
@@ -647,7 +714,7 @@ with tab3:
             if "glm52_pred" in df_analysis.columns:
                 fig, ax = plt.subplots(figsize=(6, 4))
                 counts = df_analysis["glm52_pred"].value_counts()
-                sns.barplot(y=counts.index, x=counts.values, palette="Blues_r", ax=ax)
+                sns.barplot(y=counts.index, x=counts.values, hue=counts.index, palette="Blues_r", legend=False, ax=ax)
                 ax.set_title("Complaints by Category Classification")
                 ax.set_xlabel("Count")
                 plt.tight_layout()

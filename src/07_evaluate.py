@@ -34,10 +34,10 @@ with open(str(OUT_REPORT), "w", encoding="utf-8") as f:
     f.write(report)
 
 # ── Confusion matrix ───────────────────────────────────────────────────────
-labels = sorted(df["category"].unique())
+labels = sorted(list(set(y_true.unique()).union(set(y_pred.unique()))))
 cm     = confusion_matrix(y_true, y_pred, labels=labels)
 
-fig, ax = plt.subplots(figsize=(12, 9))
+fig, ax = plt.subplots(figsize=(10, 8))
 sns.heatmap(
     cm,
     annot=True,
@@ -46,10 +46,11 @@ sns.heatmap(
     xticklabels=labels,
     yticklabels=labels,
     ax=ax,
+    cbar=True
 )
-ax.set_title("GLM-5.2 Confusion Matrix", fontsize=14, pad=12)
-ax.set_xlabel("Predicted Label", fontsize=11)
-ax.set_ylabel("True Label",      fontsize=11)
+ax.set_title("UrbanLLM Complaint Dispatcher - Confusion Matrix", fontsize=14, pad=12, fontweight="bold")
+ax.set_xlabel("Predicted Label", fontsize=11, fontweight="bold")
+ax.set_ylabel("True Label",      fontsize=11, fontweight="bold")
 plt.xticks(rotation=45, ha="right")
 plt.yticks(rotation=0)
 plt.tight_layout()
