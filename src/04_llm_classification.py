@@ -38,12 +38,6 @@ LABELS = [
     "other",
 ]
 
-import joblib
-import numpy as np
-
-MODEL_FILE = _DATA / "results" / "tfidf_logreg_model.pkl"
-baseline_model = joblib.load(str(MODEL_FILE)) if MODEL_FILE.exists() else None
-
 SYSTEM_PROMPT = """
 You are an urban complaint classification assistant for a smart city platform.
 Classify each citizen complaint into exactly one category.
@@ -52,29 +46,14 @@ Allowed categories:
 road_infrastructure, waste_management, water_utilities, traffic_management,
 street_lighting, noise, public_safety, environment, other.
 
-Return only valid JSON matching this exact schema:
+Return only valid JSON:
 {
-  "category": "road_infrastructure",
-  "confidence": 0.95,
-  "reason": "short explanation"
+  "category": "...",
+  "confidence": 0.0,
+  "reason": "short reason"
 }
-
-Note: "confidence" MUST be a float number between 0.0 and 1.0 representing your classification certainty (e.g. 0.95).
 """
 
-def predict_baseline_fallback(text: str) -> tuple[str, float]:
-    if baseline_model is None:
-        return "other", 0.85
-    try:
-        pred = baseline_model.predict([text])[0]
-        if hasattr(baseline_model, "predict_proba"):
-            probs = baseline_model.predict_proba([text])[0]
-            conf = float(np.max(probs))
-        else:
-            conf = 0.85
-        return pred, conf
-    except Exception:
-        return "other", 0.85
 
 def classify_complaint(text: str) -> dict:
     user_prompt = f"""
@@ -83,7 +62,7 @@ Citizen complaint:
 
 Classify the complaint into one allowed category.
 """
-    max_retries = 3
+    max_retries = 5
     backoff = 2.0
     for attempt in range(max_retries):
         try:
@@ -94,54 +73,39 @@ Classify the complaint into one allowed category.
                     {"role": "user",   "content": user_prompt},
                 ],
                 temperature=0,
+                response_format={"type": "json_object"},
             )
-            content = response.choices[0].message.content.strip()
-            
-            if content.startswith("```json"):
-                content = content[7:]
-            if content.startswith("```"):
-                content = content[3:]
-            if content.endswith("```"):
-                content = content[:-3]
-            content = content.strip()
-            
+            content = response.choices[0].message.content
             parsed = json.loads(content)
             
+            # Ensure parsed output is a dict and has all required fields
             if not isinstance(parsed, dict):
-                parsed = {}
-                
-            cat = parsed.get("category", "other")
-            if cat not in LABELS:
-                cat = "other"
-            parsed["category"] = cat
+                parsed = {
+                    "category":   "other",
+                    "confidence": 0.0,
+                    "reason":     "Response was not a JSON object",
+                }
             
-            try:
-                conf = float(parsed.get("confidence", 0.90))
-                if conf <= 0.0 and cat != "other":
-                    conf = 0.90
-                conf = min(max(conf, 0.0), 1.0)
-            except Exception:
-                conf = 0.90 if cat != "other" else 0.50
+            if "category" not in parsed:
+                parsed["category"] = "other"
+            if "confidence" not in parsed:
+                parsed["confidence"] = 0.0
+            if "reason" not in parsed:
+                parsed["reason"] = "No reason provided by LLM"
                 
-            parsed["confidence"] = conf
-            parsed["reason"] = parsed.get("reason", "Classification completed")
+            if parsed.get("category") not in LABELS:
+                parsed["category"] = "other"
+                
             parsed["raw_output"] = content
             return parsed
             
         except Exception as e:
-            if attempt < max_retries - 1:
-                time.sleep(backoff)
-                backoff *= 2.0
-                continue
-            
-            # API Rate Limit or failure fallback to Baseline ML model
-            fallback_cat, fallback_conf = predict_baseline_fallback(text)
-            return {
-                "category":   fallback_cat,
-                "confidence": fallback_conf,
-                "reason":     f"Baseline ML Fallback (API Issue: {str(e)[:60]})",
-                "raw_output": f"API Error: {str(e)}",
-            }
+            if attempt == max_retries - 1:
+                print(f"API call failed after {max_retries} attempts: {e}")
+                raise e
+            print(f"Attempt {attempt + 1} failed: {e}. Retrying in {backoff:.1f} seconds...")
+            time.sleep(backoff)
+            backoff *= 2.0
 
 
 # ── Load data ──────────────────────────────────────────────────────────────
