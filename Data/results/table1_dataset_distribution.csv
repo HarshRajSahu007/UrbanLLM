@@ -1,10 +1,7 @@
 Complaint Category,Number of Samples
-other,396
-road_infrastructure,197
-water_utilities,117
-waste_management,95
-traffic_management,85
-environment,41
-public_safety,33
-noise,19
-street_lighting,17
+other,7
+road_infrastructure,3
+street_lighting,2
+waste_management,1
+public_safety,1
+noise,1
