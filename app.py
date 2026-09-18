@@ -165,18 +165,18 @@ st.sidebar.markdown("<h2 style='background: linear-gradient(135deg, #60A5FA, #A7
 st.sidebar.subheader("LLM Configuration")
 api_key = st.sidebar.text_input(
     "API Key",
-    value=os.getenv("LLM_API_KEY", ""),
+    value=os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY", ""),
     type="password",
-    help="LLM API Key from your .env or provider"
+    help="OpenAI API Key from your .env or provider"
 )
 base_url = st.sidebar.text_input(
     "Base URL",
-    value=os.getenv("LLM_BASE_URL", "https://api.morphllm.com/v1"),
+    value=os.getenv("LLM_BASE_URL", "https://api.openai.com/v1"),
     help="LLM Base Endpoint"
 )
 model_name = st.sidebar.text_input(
     "Model Name",
-    value=os.getenv("LLM_MODEL", os.getenv("GLM_MODEL", "morph-glm52-744b")),
+    value=os.getenv("OPENAI_MODEL") or os.getenv("LLM_MODEL") or os.getenv("GLM_MODEL", "gpt-4o-mini"),
     help="Model identifier"
 )
 
@@ -197,7 +197,10 @@ confidence_threshold = st.sidebar.slider(
 def get_openai_client(key, url):
     if not key:
         return None
-    return OpenAI(api_key=key, base_url=url)
+    url_clean = url.strip() if url else ""
+    if url_clean:
+        return OpenAI(api_key=key, base_url=url_clean)
+    return OpenAI(api_key=key)
 
 client = get_openai_client(api_key, base_url)
 
@@ -658,7 +661,7 @@ with tab3:
         cm_image_path = _RESULTS_DIR / "glm52_confusion_matrix.png"
         if cm_image_path.exists():
             st.markdown("#### LLM Classifier Evaluation - Confusion Matrix")
-            st.image(str(cm_image_path), caption="GLM-5.2 Model Prediction vs Ground-Truth Category Matrix", use_container_width=True)
+            st.image(str(cm_image_path), caption="GLM-5.2 Model Prediction vs Ground-Truth Category Matrix", use_column_width=True)
             
     else:
         st.info("No system results found. Run the pipeline below to process the default datasets and generate analytics.")

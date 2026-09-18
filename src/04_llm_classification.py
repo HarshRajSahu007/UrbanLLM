@@ -19,12 +19,16 @@ RAW_OUT_FILE = _DATA / "results" / "glm52_raw_responses.jsonl"
 
 os.makedirs(str(OUT_FILE.parent), exist_ok=True)
 
-client = OpenAI(
-    api_key=os.getenv("LLM_API_KEY"),
-    base_url=os.getenv("LLM_BASE_URL"),
-)
+api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY")
+base_url = os.getenv("LLM_BASE_URL") or os.getenv("OPENAI_BASE_URL") or None
 
-MODEL_NAME = os.getenv("GLM_MODEL", "glm-5.2")
+client_kwargs = {"api_key": api_key}
+if base_url:
+    client_kwargs["base_url"] = base_url
+
+client = OpenAI(**client_kwargs)
+
+MODEL_NAME = os.getenv("OPENAI_MODEL") or os.getenv("LLM_MODEL") or os.getenv("GLM_MODEL", "gpt-4o-mini")
 
 LABELS = [
     "road_infrastructure",
